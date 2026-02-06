@@ -1,0 +1,6 @@
+# Environnement Python
+.venv/
+venv/
+
+# cache
+src/optcg/__pycache__
