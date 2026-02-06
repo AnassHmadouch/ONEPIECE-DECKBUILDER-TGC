@@ -4,3 +4,4 @@ venv/
 
 # cache
 src/optcg/__pycache__
+src/__pycache__
