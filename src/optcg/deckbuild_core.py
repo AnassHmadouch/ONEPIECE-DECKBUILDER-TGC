@@ -1,5 +1,7 @@
 from collections import defaultdict
 from typing import Any, Dict, List, Tuple
+from optcg.errors import InvalidLeaderIdError, LeaderNotFoundError, ApiUnavailableError
+import re
 
 import pandas as pd
 
@@ -82,9 +84,21 @@ def score_crocodile_black(row: pd.Series, style: str) -> float:
     return s
 
 def build_deck_for_leader(leader_id: str, style: str = "control") -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    if not leader_id or not leader_id.strip():
+        raise InvalidLeaderIdError("Leader ID manquant. Exemple : OP14-079")
+
+    leader_id = leader_id.strip().upper()
+    if not re.match(r"^OP\d{2}-\d{3}$", leader_id):
+        raise InvalidLeaderIdError("Leader ID invalide. Format : OPxx-xxx (ex: OP14-079)")
+
     client = OptcgClient()
 
-    leader_raw = client.card_by_id(leader_id)
+    try:
+        leader_raw = client.card_by_id(leader_id)
+    except RuntimeError as e:
+        # typiquement: API call failed after retries
+        raise ApiUnavailableError("API indisponible ou Leader ID introuvable.") from e
+
     leader = normalize_card(unwrap_card(leader_raw))
 
     if (leader.get("card_type") or "").lower() != "leader":
@@ -98,6 +112,35 @@ def build_deck_for_leader(leader_id: str, style: str = "control") -> Tuple[pd.Da
     cards_list = unwrap_list(all_raw)
     normalized = [normalize_card(c) for c in cards_list if isinstance(c, dict)]
     df = pd.DataFrame(normalized)
+    
+    # 1) Nettoyage: éviter que les Alt Art / Reprint biaisent le scoring
+    # On garde 1 seule ligne par card_id (la "meilleure" selon quelques critères)
+    df = df[df["card_id"].notna()].copy()
+    df["name_l"] = df["name"].fillna("").astype(str).str.lower()
+
+    # score de "qualité d'édition" : normal > reprint > alternate art
+    def print_rank(name_l: str) -> int:
+        if "alternate art" in name_l:
+            return 0
+        if "reprint" in name_l:
+            return 1
+        return 2
+
+    df["print_rank"] = df["name_l"].apply(print_rank)
+
+    # bonus: on préfère une image_url non vide
+    df["has_img"] = df["image_url"].notna().astype(int)
+
+    # tri pour garder la meilleure ligne par card_id
+    df = df.sort_values(
+        ["card_id", "print_rank", "has_img"],
+        ascending=[True, False, False]
+    )
+
+    df = df.drop_duplicates(subset=["card_id"], keep="first").copy()
+
+    # nettoyage
+    df = df.drop(columns=["name_l", "print_rank", "has_img"], errors="ignore")
 
     df["type_l"] = df["card_type"].fillna("").str.lower()
     df = df[df["type_l"].isin(PLAYABLE_TYPES)].copy()

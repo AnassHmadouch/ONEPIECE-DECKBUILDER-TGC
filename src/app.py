@@ -1,9 +1,14 @@
 import streamlit as st
 import pandas as pd
+from pathlib import Path
 
 from optcg.client import OptcgClient
 from optcg.normalize import normalize_card
 from optcg.deckbuild_core import build_deck_for_leader
+from optcg.errors import DeckBuilderError
+
+ASSETS_DIR = Path(__file__).parent / "assets"
+FALLBACK_IMG = ASSETS_DIR / "DON!!_blackbeard.png"
 
 st.set_page_config(page_title="One Piece TCG – Card Browser", layout="wide")
 
@@ -114,6 +119,9 @@ with tab1:
             img = card.get("image_url")
             if img:
                 st.image(img, width="stretch")
+            else:
+                st.image(str(FALLBACK_IMG), width="stretch")
+
             st.markdown(f"**{safe_str(card.get('name'))}**")
             st.write(
                 f"ID: {safe_str(card.get('card_id'))} | "
@@ -127,40 +135,66 @@ with tab1:
 with tab2:
     st.subheader("Deck Builder (V1)")
 
-    leader_id = st.text_input("Leader ID", value="OP14-079")
-    style = st.selectbox("Style", ["control", "midrange", "aggro"], index=0)
+    leader_id = st.text_input("Leader ID", value="", placeholder="Ex: OP14-079", key="leader_id_input")
+    style = st.selectbox("Style", ["control", "midrange", "aggro"], index=0, key="style_select")
 
-    if st.button("Générer le deck"):
-        with st.spinner("Génération du deck..."):
-            deck_df, leader = build_deck_for_leader(leader_id, style)
+    if st.button("Générer le deck", key="build_btn"):
+        try:
+            leader_id_clean = (leader_id or "").strip().upper()
+            # Optionnel: validation UI directe (évite même d’aller dans le backend)
+            if not leader_id_clean:
+                st.error("Leader ID manquant. Exemple : OP14-079")
+                st.stop()
 
+            with st.spinner("Génération du deck..."):
+                deck_df, leader = build_deck_for_leader(leader_id_clean, style)
+
+        except DeckBuilderError as e:
+            # 👉 ERREUR “PROPRE” sans traceback
+            st.error(str(e))
+            st.stop()
+
+        except Exception as e:
+            # 👉 fallback (pas de crash)
+            st.error("Erreur inattendue pendant la génération du deck.")
+            with st.expander("Détails (debug)"):
+                st.exception(e)  # tu peux aussi enlever ce bloc si tu ne veux aucun détail
+            st.stop()
+
+        # ✅ Si on arrive ici, tout va bien
         st.success(f"Deck généré pour {leader.get('name')} ({leader.get('card_id')})")
 
-        # Export decklist
-        deck_lines = []
-        for _, r in deck_df.iterrows():
-            deck_lines.append(f"{int(r['qty'])}x {r['card_id']} - {r['name']}")
+        deck_lines = [f"{int(r['qty'])}x {r['card_id']} - {r['name']}" for _, r in deck_df.iterrows()]
         deck_text = "\n".join(deck_lines)
 
         st.download_button(
             "Télécharger decklist (.txt)",
             data=deck_text,
-            file_name=f"deck_{leader_id}_{style}.txt",
+            file_name=f"deck_{leader_id_clean}_{style}.txt",
             mime="text/plain",
         )
+        st.divider()
+        st.subheader("Cartes du deck")
 
-        # Affichage visuel du deck
         deck_cols = st.slider("Colonnes (deck)", 2, 8, 5, key="deck_cols")
         grid = st.columns(deck_cols)
 
         cards = deck_df.to_dict("records")
         for i, card in enumerate(cards):
             with grid[i % deck_cols]:
-                if card.get("image_url"):
-                    st.image(card["image_url"], width="stretch")
-                st.markdown(f"**{int(card['qty'])}x {safe_str(card.get('name'))}**")
+                img = card.get("image_url")
+                if img:
+                    st.image(img, width="stretch")
+                else:
+                    st.image(str(FALLBACK_IMG), width="stretch")
+
+
+                st.markdown(f"**{int(card.get('qty', 0))}x {safe_str(card.get('name'))}**")
                 st.caption(
                     f"{safe_str(card.get('card_id'))} | "
                     f"{safe_str(card.get('card_type'))} | "
                     f"cost={safe_str(card.get('cost'))}"
                 )
+
+                if st.toggle("Voir texte", key=f"deck_text_{i}"):
+                    st.write(safe_str(card.get("text")))
